@@ -198,6 +198,46 @@ def fmt(n):
     return f"{int(n):,}".replace(",", " ")
 
 
+# напоминание о сроке подачи: настраивается необязательными переменными, по умолчанию 7 дней и порог 3000
+WINDOW_DAYS = float(os.environ.get("WINDOW_DAYS") or 7)
+MIN_VIEWS = int(os.environ.get("MIN_VIEWS") or 3000)
+TZ_NAME = os.environ.get("TIMEZONE") or "Europe/Samara"
+MONTHS = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+
+
+def when(ts):
+    """Дата и время по твоему часовому поясу: «4 ноя, 14:10»."""
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        d = datetime.fromtimestamp(ts, ZoneInfo(TZ_NAME))
+    except Exception:
+        d = datetime.utcfromtimestamp(ts)
+    return f"{d.day} {MONTHS[d.month - 1]}, {d:%H:%M}"
+
+
+def video_card(user, vid, title, st, created):
+    """Название ролика и вся статистика одним блоком."""
+    views, likes, com, sh, fav, saves = st
+    er = (likes + com + sh + fav) / views * 100 if views else 0
+    name = html.escape((title or "").strip()[:200]) or "Без названия"
+    lines = [f"🎬 <b>{name}</b>", "",
+             f"👁 Просмотры: <b>{fmt(views)}</b>",
+             f"📈 ER: <b>{er:.1f}%</b>".replace(".", ","),
+             f"❤️ Лайки: {fmt(likes)}",
+             f"💬 Комментарии: {fmt(com)}",
+             f"🔁 Репосты: {fmt(sh)}",
+             f"⭐ Избранное: {fmt(fav)}"]
+    if saves:
+        lines.append(f"📥 Сохранения: {fmt(saves)}")
+    if created:
+        lines += ["", f"📅 Опубликовано: {when(created)}"]
+        if WINDOW_DAYS > 0:
+            lines.append(f"⏳ Подать до: {when(created + WINDOW_DAYS * 86400)}")
+    lines += ["", f"https://www.tiktok.com/@{user}/video/{vid}"]
+    return "\n".join(lines)
+
+
 def main():
     if not TOKEN or not CHAT_ID or not ACCOUNTS:
         print("Не заданы секреты BOT_TOKEN, CHAT_ID или TIKTOK_ACCOUNTS — проверь настройки репозитория.")
@@ -221,7 +261,8 @@ def main():
 
     if TEST:
         send("✅ <b>Бот подключён.</b>\nСлежу за: " + ", ".join("@" + html.escape(a) for a in ACCOUNTS) +
-             "\nПришлю сообщение, когда видео пройдёт 3K, 5K, 10K … 100K, 125K, 150K и дальше каждые 25K.")
+             "\nПришлю сообщение, когда видео пройдёт 3K, 5K, 10K … 100K, 125K, 150K и дальше каждые 25K, "
+             f"и напомню за сутки до конца срока подачи ({int(WINDOW_DAYS)} дн. с публикации, если набрано от {fmt(MIN_VIEWS)} просм.).")
         print("Тестовое сообщение отправлено")
 
     sent = 0
@@ -239,7 +280,7 @@ def main():
 
         for p in posts:
             vid = str(p.get("video_id") or p.get("id") or "")
-            if not vid:
+            if not vid.isdigit():
                 continue
             views = int(p.get("play_count") or 0)
             top = top_milestone(views)
@@ -256,17 +297,7 @@ def main():
             rec["s"] = [views, int(p.get("digg_count") or 0), int(p.get("comment_count") or 0),
                         int(p.get("share_count") or 0), int(p.get("collect_count") or 0), int(p.get("download_count") or 0)]
             if top > rec["m"]:
-                likes = int(p.get("digg_count") or 0)
-                com = int(p.get("comment_count") or 0)
-                sh = int(p.get("share_count") or 0)
-                fav = int(p.get("collect_count") or 0)
-                er = (likes + com + sh + fav) / views * 100 if views else 0
-                title = html.escape((p.get("title") or "Без описания")[:120])
-                text = (f"🚀 <b>{fmt(top)} просмотров!</b>\n"
-                        f"{title}\n\n"
-                        f"👁 {fmt(views)}  ·  ER {er:.1f}%\n"
-                        f"❤️ {fmt(likes)}  💬 {fmt(com)}  🔁 {fmt(sh)}  ⭐ {fmt(fav)}\n"
-                        f"https://www.tiktok.com/@{user}/video/{vid}")
+                text = f"🚀 <b>Рубеж {fmt(top)} просмотров!</b>\n\n" + video_card(user, vid, rec["t"], rec["s"], rec["c"])
                 try:
                     send(text)
                     rec["m"] = top
@@ -274,6 +305,25 @@ def main():
                     time.sleep(0.5)
                 except Exception as e:
                     print(f"  не отправилось ({vid}): {e}")
+
+            # за сутки до конца срока подачи — одно напоминание на видео
+            if WINDOW_DAYS > 0 and rec["c"] and not rec.get("r"):
+                deadline = rec["c"] + WINDOW_DAYS * 86400
+                left = deadline - time.time()
+                if 0 < left <= 86400 and views >= MIN_VIEWS:
+                    hours = max(1, int(left // 3600))
+                    text = (f"⏰ <b>Осталось меньше суток, чтобы подать видео на выплату!</b>\n"
+                            f"Срок истекает через ~{hours} ч.\n\n" + video_card(user, vid, rec["t"], rec["s"], rec["c"]) +
+                            "\n\n<i>Если уже подал — просто отметь статус в приложении.</i>")
+                    try:
+                        send(text)
+                        rec["r"] = 1
+                        sent += 1
+                        time.sleep(0.5)
+                    except Exception as e:
+                        print(f"  напоминание не отправилось ({vid}): {e}")
+                elif left <= 0:
+                    rec["r"] = 1  # срок прошёл — больше не напоминаем
         state["accounts"][user] = int(time.time())
 
     state["secuid"] = SECUIDS
