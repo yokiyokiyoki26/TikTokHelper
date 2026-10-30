@@ -51,7 +51,7 @@ def fetch_posts(user):
     for page in range(PAGES):
         params = urllib.parse.urlencode({"unique_id": user, "count": 30, "cursor": cursor})
         j = {}
-        for attempt in range(4):
+        for attempt in range(2):
             try:
                 if attempt % 2 == 0:
                     j = http_json("https://www.tikwm.com/api/user/posts?" + params)
@@ -74,6 +74,66 @@ def fetch_posts(user):
             break
         cursor = d.get("cursor", 0)
     return videos
+
+
+def _num(x):
+    try:
+        return int(x or 0)
+    except Exception:
+        return 0
+
+
+def _ytdlp(args, timeout):
+    import subprocess
+    r = subprocess.run([sys.executable, "-m", "yt_dlp", "--no-warnings", "-J"] + args,
+                       capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0 or not r.stdout.strip():
+        raise RuntimeError((r.stderr or "yt-dlp без ответа").strip().splitlines()[-1][:300])
+    return json.loads(r.stdout)
+
+
+def fetch_posts_ytdlp(user):
+    """Видео аккаунта прямо с сайта TikTok через yt-dlp."""
+    url = f"https://www.tiktok.com/@{user}"
+    limit = str(PAGES * 30)
+    j = _ytdlp(["--flat-playlist", "--playlist-end", limit, url], 240)
+    entries = [e for e in (j.get("entries") or []) if e]
+    if entries and all(e.get("view_count") is None for e in entries):
+        # в быстром режиме цифр нет — берём подробно последние 30 видео
+        j = _ytdlp(["--skip-download", "--ignore-errors", "--playlist-end", "30", url], 480)
+        entries = [e for e in (j.get("entries") or []) if e]
+    out = []
+    for e in entries:
+        vid = str(e.get("id") or "")
+        if not vid.isdigit():
+            continue
+        out.append({
+            "video_id": vid,
+            "title": e.get("description") or e.get("title") or "",
+            "create_time": _num(e.get("timestamp")),
+            "play_count": _num(e.get("view_count")),
+            "digg_count": _num(e.get("like_count")),
+            "comment_count": _num(e.get("comment_count")),
+            "share_count": _num(e.get("repost_count")),
+            "collect_count": _num(e.get("save_count") or e.get("collect_count")),
+            "download_count": 0,
+        })
+    if not out:
+        raise RuntimeError("TikTok не отдал список видео")
+    return out
+
+
+def get_posts(user):
+    errs = []
+    for name, fn in (("yt-dlp", fetch_posts_ytdlp), ("tikwm", fetch_posts)):
+        try:
+            posts = fn(user)
+            print(f"  источник: {name}")
+            return posts
+        except Exception as e:
+            print(f"  {name} не сработал: {e}")
+            errs.append(f"{name}: {e}")
+    raise RuntimeError("; ".join(errs))
 
 
 def fmt(n):
@@ -102,7 +162,7 @@ def main():
     for user in ACCOUNTS:
         print(f"@{user}")
         try:
-            posts = fetch_posts(user)
+            posts = get_posts(user)
         except Exception as e:
             print(f"  не удалось получить видео: {e}")
             errors[user] = str(e)
