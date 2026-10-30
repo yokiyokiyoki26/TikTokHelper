@@ -3,6 +3,8 @@ TikTok Касса — бот уведомлений о рубежах просм
 Запускается GitHub Actions каждые 15 минут. Ничего тут менять не нужно:
 настройки берутся из секретов репозитория (BOT_TOKEN, CHAT_ID, TIKTOK_ACCOUNTS).
 """
+import base64
+import hashlib
 import html
 import json
 import os
@@ -21,6 +23,29 @@ VIDEO_LINKS = [v.strip() for v in os.environ.get("TIKTOK_VIDEO", "").replace(";"
 SECUIDS = {}  # заполняется из памяти бота
 PAGES = 3  # 3 страницы по 30 = последние ~90 видео каждого аккаунта
 DATA_FILE = os.environ.get("DATA_FILE", "data.json")  # файл со статистикой для мини-приложения
+DATA_KEY = os.environ.get("DATA_KEY", "").strip()      # ключ шифрования: тот же вводится в приложении
+KDF_ITER = 200000
+
+
+def _kdf(salt):
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    return PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=KDF_ITER).derive(DATA_KEY.encode("utf-8"))
+
+
+def encrypt(obj):
+    """AES-GCM: без ключа содержимое файла прочитать невозможно."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    salt, iv = os.urandom(16), os.urandom(12)
+    ct = AESGCM(_kdf(salt)).encrypt(iv, json.dumps(obj, ensure_ascii=False).encode("utf-8"), None)
+    b = lambda x: base64.b64encode(x).decode()
+    return {"enc": 1, "iter": KDF_ITER, "salt": b(salt), "iv": b(iv), "data": b(ct)}
+
+
+def decrypt(box):
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    d = lambda x: base64.b64decode(x)
+    return json.loads(AESGCM(_kdf(d(box["salt"]))).decrypt(d(box["iv"]), d(box["data"]), None).decode("utf-8"))
 
 BASE = [3000, 5000, 10000, 15000, 20000, 25000, 30000, 40000, 50000, 60000, 70000, 80000, 90000, 100000]
 
@@ -177,10 +202,18 @@ def main():
     if not TOKEN or not CHAT_ID or not ACCOUNTS:
         print("Не заданы секреты BOT_TOKEN, CHAT_ID или TIKTOK_ACCOUNTS — проверь настройки репозитория.")
         sys.exit(1)
+    if len(DATA_KEY) < 12:
+        print("Не задан секрет DATA_KEY (минимум 12 символов). Без него статистика была бы видна всем — останавливаюсь.")
+        sys.exit(1)
 
     try:
         state = json.load(open(STATE_FILE, encoding="utf-8"))
-    except Exception:
+        if state.get("enc"):
+            state = decrypt(state)
+        elif state:
+            print("Память бота была без шифрования — с этого запуска она шифруется")
+    except Exception as e:
+        print(f"Память бота не прочиталась ({e}) — начинаю заново")
         state = {}
     state.setdefault("videos", {})
     state.setdefault("accounts", {})
@@ -244,14 +277,21 @@ def main():
         state["accounts"][user] = int(time.time())
 
     state["secuid"] = SECUIDS
-    json.dump(state, open(STATE_FILE, "w", encoding="utf-8"), ensure_ascii=False)
 
     # статистика для мини-приложения (лежит на твоём сайте github.io)
     videos = [{"id": vid, "user": r["u"], "title": r.get("t", ""), "created": r.get("c", 0), "s": r["s"]}
               for vid, r in state["videos"].items() if r.get("s") and r.get("u") in ACCOUNTS]
     videos.sort(key=lambda x: x["created"], reverse=True)
-    data = {"updated": int(time.time()), "accounts": ACCOUNTS, "errors": errors, "videos": videos}
-    json.dump(data, open(DATA_FILE, "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))
+    data = {"accounts": ACCOUNTS, "errors": errors, "videos": videos}
+    digest = hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    if digest != state.get("data_hash") or not os.path.exists(DATA_FILE):
+        # перезаписываем файл только когда цифры изменились — меньше лишних обновлений сайта
+        data["updated"] = int(time.time())
+        box = encrypt(data)
+        box["updated"] = data["updated"]
+        json.dump(box, open(DATA_FILE, "w", encoding="utf-8"), separators=(",", ":"))
+        state["data_hash"] = digest
+    json.dump(encrypt(state), open(STATE_FILE, "w", encoding="utf-8"))
     print(f"Готово. Отправлено уведомлений: {sent}")
 
 
