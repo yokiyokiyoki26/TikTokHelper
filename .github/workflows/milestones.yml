@@ -20,11 +20,18 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Установить yt-dlp
+        run: pip install -q -U yt-dlp
 
       - name: Загрузить память бота
         run: |
@@ -40,7 +47,7 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           TIKTOK_ACCOUNTS: ${{ secrets.TIKTOK_ACCOUNTS }}
           TEST: ${{ github.event.inputs.test }}
-        run: python3 bot/check.py /tmp/state.json
+        run: python bot/check.py /tmp/state.json
 
       - name: Опубликовать статистику для приложения
         run: |
