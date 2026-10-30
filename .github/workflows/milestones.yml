@@ -30,8 +30,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Установить yt-dlp
-        run: pip install -q -U yt-dlp
+      - name: Установить yt-dlp и шифрование
+        run: pip install -q -U yt-dlp cryptography
 
       - name: Загрузить память бота
         run: |
@@ -47,6 +47,7 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           TIKTOK_ACCOUNTS: ${{ secrets.TIKTOK_ACCOUNTS }}
           TIKTOK_VIDEO: ${{ secrets.TIKTOK_VIDEO }}
+          DATA_KEY: ${{ secrets.DATA_KEY }}
           TEST: ${{ github.event.inputs.test }}
         run: python bot/check.py /tmp/state.json
 
