@@ -16,6 +16,9 @@ TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 ACCOUNTS = [a.strip().lstrip("@") for a in os.environ.get("TIKTOK_ACCOUNTS", "").replace(";", ",").replace(" ", ",").split(",") if a.strip()]
 TEST = os.environ.get("TEST", "").lower() == "true"
+# ссылки на любые свои видео — по ним бот узнаёт внутренний ID профиля, если TikTok не отдаёт его напрямую
+VIDEO_LINKS = [v.strip() for v in os.environ.get("TIKTOK_VIDEO", "").replace(";", ",").replace(" ", ",").split(",") if v.strip()]
+SECUIDS = {}  # заполняется из памяти бота
 PAGES = 3  # 3 страницы по 30 = последние ~90 видео каждого аккаунта
 DATA_FILE = os.environ.get("DATA_FILE", "data.json")  # файл со статистикой для мини-приложения
 
@@ -92,11 +95,41 @@ def _ytdlp(args, timeout):
     return json.loads(r.stdout)
 
 
+def find_secuid(user):
+    """Узнаёт внутренний ID профиля (secUid) по ссылке на одно из видео."""
+    if SECUIDS.get(user):
+        return SECUIDS[user]
+    for link in VIDEO_LINKS:
+        try:
+            v = _ytdlp(["--skip-download", link], 120)
+        except Exception as e:
+            print(f"  не удалось открыть видео {link}: {e}")
+            continue
+        owner = str(v.get("uploader") or "").lstrip("@").lower()
+        cid = v.get("channel_id") or ""
+        print(f"  видео {link} → автор @{owner}")
+        if cid and (owner == user.lower() or len(ACCOUNTS) == 1):
+            SECUIDS[user] = cid
+            return cid
+    return None
+
+
 def fetch_posts_ytdlp(user):
     """Видео аккаунта прямо с сайта TikTok через yt-dlp."""
-    url = f"https://www.tiktok.com/@{user}"
     limit = str(PAGES * 30)
-    j = _ytdlp(["--flat-playlist", "--playlist-end", limit, url], 240)
+    url = f"https://www.tiktok.com/@{user}"
+    if SECUIDS.get(user):
+        url = "tiktokuser:" + SECUIDS[user]
+    try:
+        j = _ytdlp(["--flat-playlist", "--playlist-end", limit, url], 240)
+    except Exception as e:
+        if url.startswith("tiktokuser:"):
+            raise
+        sec = find_secuid(user)
+        if not sec:
+            raise RuntimeError(f"{e}. Добавь секрет TIKTOK_VIDEO со ссылкой на любое своё видео")
+        url = "tiktokuser:" + sec
+        j = _ytdlp(["--flat-playlist", "--playlist-end", limit, url], 240)
     entries = [e for e in (j.get("entries") or []) if e]
     if entries and all(e.get("view_count") is None for e in entries):
         # в быстром режиме цифр нет — берём подробно последние 30 видео
@@ -151,6 +184,7 @@ def main():
         state = {}
     state.setdefault("videos", {})
     state.setdefault("accounts", {})
+    SECUIDS.update(state.get("secuid") or {})
 
     if TEST:
         send("✅ <b>Бот подключён.</b>\nСлежу за: " + ", ".join("@" + html.escape(a) for a in ACCOUNTS) +
@@ -209,6 +243,7 @@ def main():
                     print(f"  не отправилось ({vid}): {e}")
         state["accounts"][user] = int(time.time())
 
+    state["secuid"] = SECUIDS
     json.dump(state, open(STATE_FILE, "w", encoding="utf-8"), ensure_ascii=False)
 
     # статистика для мини-приложения (лежит на твоём сайте github.io)
