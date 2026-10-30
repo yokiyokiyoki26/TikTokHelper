@@ -2,7 +2,7 @@ name: TikTok рубежи
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # каждые 15 минут (GitHub иногда запускает с опозданием)
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       test:
@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Загрузить память бота
         run: |
@@ -39,6 +41,15 @@ jobs:
           TIKTOK_ACCOUNTS: ${{ secrets.TIKTOK_ACCOUNTS }}
           TEST: ${{ github.event.inputs.test }}
         run: python3 bot/check.py /tmp/state.json
+
+      - name: Опубликовать статистику для приложения
+        run: |
+          git config user.name "kassa-bot"
+          git config user.email "kassa-bot@users.noreply.github.com"
+          git add data.json
+          if git diff --cached --quiet; then echo "Без изменений"; exit 0; fi
+          git commit -qm "Обновление статистики"
+          for i in 1 2 3; do git pull -q --rebase origin main && git push -q origin HEAD:main && break; sleep 5; done
 
       - name: Сохранить память бота
         env:
