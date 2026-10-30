@@ -46,6 +46,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           TIKTOK_ACCOUNTS: ${{ secrets.TIKTOK_ACCOUNTS }}
+          TIKTOK_VIDEO: ${{ secrets.TIKTOK_VIDEO }}
           TEST: ${{ github.event.inputs.test }}
         run: python bot/check.py /tmp/state.json
 
