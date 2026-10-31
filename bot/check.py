@@ -133,7 +133,8 @@ def find_secuid(user):
         owner = str(v.get("uploader") or "").lstrip("@").lower()
         cid = v.get("channel_id") or ""
         print(f"  видео {link} → автор @{owner}")
-        if cid and (owner == user.lower() or len(ACCOUNTS) == 1):
+        # берём ID только если видео принадлежит именно этому аккаунту — иначе подтянулись бы чужие ролики
+        if cid and (owner == user.lower() or (not owner and len(ACCOUNTS) == 1)):
             SECUIDS[user] = cid
             return cid
     return None
